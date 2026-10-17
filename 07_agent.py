@@ -3,9 +3,10 @@ import os
 from openai import OpenAI
 import chromadb
 from dotenv import load_dotenv
-
+import requests
 load_dotenv()  # 从 .env 读密钥（.env 已被 .gitignore 排除，不会进仓库）
-
+KEY = os.getenv("QWEATHER_API_KEY")
+HOST = os.getenv("QWEATHER_API_HOST")
 # ── ① 两个客户端：embedding 用硅基流动，生成用 DeepSeek ──
 embed_client = OpenAI(base_url="https://api.siliconflow.cn/v1",
                     api_key=os.getenv("SILICONFLOW_API_KEY"))
@@ -65,7 +66,27 @@ def search_notes(question: str) -> str:
         hits = results["documents"][0]
         return "\n\n".join(hits)
 def get_weather(city: str) -> str:
-    return f"{city}, 40°C, 晴"  # 这里可以接真实天气 API
+    """查询某个城市的天气"""
+    try:
+        # 第 1 步：城市名 → 城市 ID（lang=zh 让天气描述统一返回中文，不随当地语言变）
+        geo = requests.get(f"https://{HOST}/geo/v2/city/lookup",
+                            params={"location": city, "key": KEY, "lang": "zh"},
+                            timeout=10).json()
+        # 查不到城市时 code 不是 200，location 也是空列表，给友好提示而不是崩
+        if geo.get("code") != "200" or not geo.get("location"):
+            return f"查不到城市「{city}」，请检查城市名是否正确"
+
+        # 第 2 步：城市 ID → 实时天气
+        resp = requests.get(f"https://{HOST}/v7/weather/now",
+                            params={"location": geo["location"][0]["id"], "key": KEY, "lang": "zh"},
+                            timeout=10).json()
+        if resp.get("code") != "200":
+            return f"查询「{city}」天气失败（错误码 {resp.get('code')}）"
+        now = resp["now"]
+        return f"{city}, {now['temp']}°C, {now['text']}"
+    except requests.RequestException:
+        # 断网 / 超时 / 域名不通等网络层错误，别让工具直接抛异常
+        return f"查询「{city}」天气时网络出错，请稍后再试"
 
 messages = [
         {"role": "system", "content": "你是助手，可以按需要使用工具（查笔记、查天气）。先判断用户问题需要哪个工具，再调用；回答要基于工具返回的结果，不要编造。"},
@@ -92,12 +113,12 @@ def ask(question: str) -> str:
         else:
            messages.append(msg)
            return msg.content          # ← TODO② 原来是 print + break，改成 return
-
-while True:
-    ques = input("你的问题")
-    if ques.strip() in ("quit", "exit", "q", "退出"):   # ← 新加
-        break
-    ans = ask(ques)
-    print("模型回答：", ans)
+if __name__ == "__main__":
+    while True:
+        ques = input("你的问题")
+        if ques.strip() in ("quit", "exit", "q", "退出"):   # ← 新加
+            break
+        ans = ask(ques)
+        print("模型回答：", ans)
 # ── TODO③ 你来写：交互式，让你能连续问 ──
 # 提示：while True 循环 + input("你问：") 拿输入，然后 print(ask(输入))

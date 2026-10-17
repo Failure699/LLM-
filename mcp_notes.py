@@ -25,7 +25,6 @@ server = MCPServer("notes")
 @server.tool()
 def search_notes(question: str) -> str:
     """在用户的私人笔记里检索相关段落。用户问题涉及笔记内容时先调用它查资料。"""
-    # TODO 你来写：把 07_agent.py 里 search_notes 的函数体抄过来（就 4 行逻辑）
     # 1) q_vec = embed(question)
     # 2) results = col.query(query_embeddings=[q_vec], n_results=3)
     # 3) 第一名距离 distances[0][0] > 0.9 → return "资料中没有相关内容"
