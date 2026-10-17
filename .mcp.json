@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "weather": {
+      "type": "stdio",
+      "command": ".venv/Scripts/python.exe",
+      "args": [
+        "mcp_weather.py"
+      ],
+      "env": {}
+    },
+    "notes": {
+      "type": "stdio",
+      "command": ".venv/Scripts/python.exe",
+      "args": [
+        "mcp_notes.py"
+      ],
+      "env": {}
+    }
+  }
+}

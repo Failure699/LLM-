@@ -1,0 +1,13 @@
+# ── 密钥：绝不能提交 ──
+.env
+
+# ── Python ──
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ── 本地数据 / 缓存（跑出来的，不用进仓库）──
+chroma_db/
+checkpoints.sqlite
+*.sqlite

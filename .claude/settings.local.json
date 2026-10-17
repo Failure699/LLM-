@@ -1,0 +1,6 @@
+{
+  "enabledMcpjsonServers": [
+    "weather",
+    "notes"
+  ]
+}
