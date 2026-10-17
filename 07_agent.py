@@ -50,13 +50,8 @@ def embed(text):
 chroma = chromadb.PersistentClient(path="./chroma_db")
 col = chroma.get_or_create_collection("my_notes", metadata={"hnsw:space": "cosine"})
 
-# ── ③ TODO 你来写：把「查资料」打包成一个工具函数 ──
 def search_notes(question: str) -> str:
     """在用户的笔记里检索相关段落，返回拼接好的资料文本。"""
-    # 1) q_vec = embed(question)
-    # 2) results = col.query(query_embeddings=[q_vec], n_results=3)
-    # 3) 取第一名距离 distances[0][0]，若 > 0.9 就 return "资料中没有相关内容"
-    # 4) 否则 return "\n\n".join(hits)   （hits 是命中的正文列表）
     q_vec = embed(question)
     results = col.query(query_embeddings=[q_vec], n_results=3)
     mdis = results["distances"][0][0]
@@ -112,13 +107,11 @@ def ask(question: str) -> str:
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
         else:
            messages.append(msg)
-           return msg.content          # ← TODO② 原来是 print + break，改成 return
+           return msg.content
 if __name__ == "__main__":
     while True:
         ques = input("你的问题")
-        if ques.strip() in ("quit", "exit", "q", "退出"):   # ← 新加
+        if ques.strip() in ("quit", "exit", "q", "退出"):
             break
         ans = ask(ques)
         print("模型回答：", ans)
-# ── TODO③ 你来写：交互式，让你能连续问 ──
-# 提示：while True 循环 + input("你问：") 拿输入，然后 print(ask(输入))

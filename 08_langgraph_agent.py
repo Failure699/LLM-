@@ -1,18 +1,20 @@
 # 08_langgraph_agent.py —— 把 07_agent.py 的 while True 循环，画成一张 LangGraph 图
 import os
+import requests
 import chromadb
 from openai import OpenAI
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END, MessagesState
 from langgraph.prebuilt import ToolNode
 from langchain_core.messages import SystemMessage
-from langgraph.checkpoint.memory import MemorySaver
 from dotenv import load_dotenv
 
 import sqlite3
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 load_dotenv()  # 从 .env 读密钥（.env 已被 .gitignore 排除，不会进仓库）
+KEY = os.getenv("QWEATHER_API_KEY")   # 和风天气
+HOST = os.getenv("QWEATHER_API_HOST")
 # ── ① embedding：硅基流动（照旧，跟 07 一样）──
 embed_client = OpenAI(base_url="https://api.siliconflow.cn/v1",
                     api_key=os.getenv("SILICONFLOW_API_KEY"))
@@ -34,7 +36,24 @@ def search_notes(question: str) -> str:
 
 def get_weather(city: str) -> str:
     """查询某个城市的天气"""
-    return f"{city}, 40°C, 晴"
+    try:
+        # 第 1 步：城市名 → 城市 ID（lang=zh 让天气描述统一返回中文）
+        geo = requests.get(f"https://{HOST}/geo/v2/city/lookup",
+                           params={"location": city, "key": KEY, "lang": "zh"},
+                           timeout=10).json()
+        if geo.get("code") != "200" or not geo.get("location"):
+            return f"查不到城市「{city}」，请检查城市名是否正确"
+
+        # 第 2 步：城市 ID → 实时天气
+        resp = requests.get(f"https://{HOST}/v7/weather/now",
+                            params={"location": geo["location"][0]["id"], "key": KEY, "lang": "zh"},
+                            timeout=10).json()
+        if resp.get("code") != "200":
+            return f"查询「{city}」天气失败（错误码 {resp.get('code')}）"
+        now = resp["now"]
+        return f"{city}, {now['temp']}°C, {now['text']}"
+    except requests.RequestException:
+        return f"查询「{city}」天气时网络出错，请稍后再试"
 
 tools = [search_notes, get_weather]
 
@@ -54,19 +73,12 @@ builder.add_node("model", call_model)
 builder.add_node("tools", ToolNode(tools))   # ToolNode = 框架现成的"工具站"
 builder.add_edge(START, "model")             # 起点 → 模型站（这条我帮你写好了）
 
-# TODO① 你来写：路由函数 should_continue —— 对应 07 里的 if msg.tool_calls
-# 它接收 state，读最后一条消息，判断模型有没有要调工具：
-#   有 tool_calls → return "tools"（去工具站）
-#   没有         → return END   （去终点）
 def should_continue(state):
     last = state["messages"][- 1]
     if last.tool_calls:
         return "tools"
     return END
 
-# TODO② 你来写：把剩下的两条边补上（补在这两个 TODO 下面、app = builder.compile() 之前）
-# 1) 模型站出来要"分岔"：用 add_conditional_edges，靠 should_continue 决定去哪
-# 2) 工具站跑完要"回模型站"：用 add_edge，这就是那个 while 环
 builder.add_conditional_edges("model", should_continue, {"tools": "tools", END: END})
 builder.add_edge("tools", "model")
 conn = sqlite3.connect("checkpoints.sqlite", check_same_thread=False)
@@ -82,12 +94,3 @@ while True:
         break
     result = app.invoke({"messages": [("user", ques)]}, config=config)
     print("模型回答：", result["messages"][-1].content) # 一句话打完，补个换行
-"""
-result = app.invoke({"messages": [("user", "rag是啥")],
-                    }, config=config)
-print("① state 的类型：", type(result).__name__)        # 是不是 dict？
-print("② state 有几个格子：", list(result.keys()))       # 是不是只有 messages？
-print("③ messages 有几条：", len(result["messages"]))   # 是不是 5 条？
-
-for i, m in enumerate(result["messages"]):
-    print(f"[{i}] {type(m).__name__:14s} -> {repr(m.content)[:50]}")"""
