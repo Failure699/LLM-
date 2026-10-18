@@ -11,3 +11,6 @@ venv/
 chroma_db/
 checkpoints.sqlite
 *.sqlite
+
+# ── 编辑器配置 ──
+.vscode/

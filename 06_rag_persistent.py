@@ -1,8 +1,12 @@
 import glob
 import os
+import sys
 from openai import OpenAI
 import chromadb
 from dotenv import load_dotenv
+
+# Windows 控制台默认 GBK，强制 UTF-8 输出，避免中文乱码
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 load_dotenv()
 
@@ -24,7 +28,7 @@ def chunk_text(text, chunk_size=100, overlap=20):
 # 1. 建库
 chroma = chromadb.PersistentClient(path="./chroma_db")
 
-col = chroma.get_or_create_collection("my_notes", metadata = {"hhsw : space" : "cosine"})
+col = chroma.get_or_create_collection("my_notes", metadata={"hnsw:space": "cosine"})
 
 # 2. 读 notes 文件夹所有 .md 文件，切块 + 存（这段我来，你要读懂每行）
 files = glob.glob("notes/*.md")                 # ← 新：列出所有笔记文件路径
