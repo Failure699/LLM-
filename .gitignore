@@ -14,3 +14,6 @@ checkpoints.sqlite
 
 # ── 编辑器配置 ──
 .vscode/
+
+# ── Claude Code 本地配置（会被自动改，不该进仓库）──
+.claude/
