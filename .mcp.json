@@ -15,6 +15,15 @@
         "mcp_notes.py"
       ],
       "env": {}
+    },
+    "memory" : {
+      "type" : "stdio",
+      "command": ".venv/Scripts/python.exe",
+      "args" : [
+        "mcp_memory.py"
+      ],
+      "env" : {}
     }
   }
+    
 }

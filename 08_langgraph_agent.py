@@ -2,6 +2,7 @@
 import os
 import requests
 import chromadb
+import time
 from openai import OpenAI
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END, MessagesState
@@ -24,7 +25,7 @@ def embed(text):
 
 chroma = chromadb.PersistentClient(path="./chroma_db")
 col = chroma.get_or_create_collection("my_notes", metadata={"hnsw:space": "cosine"})
-
+col_memory = chroma.get_or_create_collection("my_memory", metadata={"hnsw:space": "cosine"})
 # ── ② 工具：还是那两个函数，但 docstring 会被框架自动读成工具说明 ──
 def search_notes(question: str) -> str:
     """在用户的私人笔记里检索相关段落。用户问题涉及笔记内容时先调用它查资料。"""
@@ -54,8 +55,23 @@ def get_weather(city: str) -> str:
         return f"{city}, {now['temp']}°C, {now['text']}"
     except requests.RequestException:
         return f"查询「{city}」天气时网络出错，请稍后再试"
+def remember(text: str) -> str:
+    """存储对话记忆"""
+    vec = embed(text)
+    col_memory.add(ids = [str(time.time())], documents= [text], embeddings= [vec])
+    return f"存入成功: {text}"
+def recall(question: str) -> str:
+    """获取对话记忆"""
+    q_vec = embed(question)
+    results = col_memory.query(query_embeddings= [q_vec], n_results= 2)
+    # ② 空库 → 也没有相关记忆
+    if not results["documents"][0]:
+        return "没有相关记忆"
+    if results["distances"][0][0] > 0.9:
+        return "没有相关记忆"
+    return "\n\n".join(results["documents"][0])
 
-tools = [search_notes, get_weather]
+tools = [search_notes, get_weather, remember, recall]
 
 # ── ③ 模型：DeepSeek，bind_tools 把工具绑上去（LangChain 会自动生成工具 JSON）──
 model = ChatOpenAI(base_url="https://api.deepseek.com",
@@ -65,7 +81,10 @@ model_with_tools = model.bind_tools(tools)
 
 # ── ④ 节点：每个节点 = 一个函数，收 state、还 state ──
 def call_model(state):
-    messages = [SystemMessage("你是问答助手，首先根据笔记里的内容回答")] + state["messages"]
+    messages = [SystemMessage("""你是问答助手，首先根据笔记里的内容回答，
+                                用户透露「关于自己」的重要信息（名字、学校、计划…）
+                                → 调 remember 记下来回答需要「用户个人信息」时 → 先调 recall 查记忆，
+                                再答回答要基于 recall 返回的结果，查不到就直说，别编""")] + state["messages"]
     return {"messages": [model_with_tools.invoke(messages)]}
 # ── ⑤ 建图：先立架子，再把边连起来 ──
 builder = StateGraph(MessagesState)
