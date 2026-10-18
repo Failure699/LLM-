@@ -28,7 +28,7 @@
 - 天气 API：和风天气（QWeather）
 - 工具服务：MCP（stdio）
 
-## 怎么跑起来
+## 操作流程
 1. 装依赖：`pip install openai chromadb python-dotenv langgraph mcp`
 2. 配密钥：复制 `.env.example` 为 `.env`，填入 `DEEPSEEK_API_KEY`、`SILICONFLOW_API_KEY`、`QWEATHER_API_KEY` 和 `QWEATHER_API_HOST`
 3. 启动：
