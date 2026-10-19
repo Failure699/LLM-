@@ -7,12 +7,12 @@ from openai import OpenAI
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END, MessagesState
 from langgraph.prebuilt import ToolNode
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 from dotenv import load_dotenv
-
 import sqlite3
 from langgraph.checkpoint.sqlite import SqliteSaver
-
+MAX_try = 3
+retry_count = 0 
 load_dotenv()  # 从 .env 读密钥（.env 已被 .gitignore 排除，不会进仓库）
 KEY = os.getenv("QWEATHER_API_KEY")   # 和风天气
 HOST = os.getenv("QWEATHER_API_HOST")
@@ -78,7 +78,29 @@ model = ChatOpenAI(base_url="https://api.deepseek.com",
                 api_key=os.getenv("DEEPSEEK_API_KEY"),
                 model="deepseek-chat")
 model_with_tools = model.bind_tools(tools)
+def critic(state):
+    global retry_count
+    answer = state["messages"][- 1].content
+    for m in reversed(state["messages"]):
+        if m.type == "human":
+            question = m.content
+            break
 
+    message = [
+        SystemMessage(""""你是严格评审，逐条检查回答，两条都要看：
+        ① 正确：回答内容本身对不对，有没有瞎编。
+        ② 有用：回答对用户有没有实际帮助。如果用户的问题本身就没意义
+        （比如只发一个数字、一个表情、无意义字符），或者回答只是敷衍、
+        复读、绕圈子，就属于「没用」。
+         只要有一条不满足，就判「错误」。
+        回复必须以「正确」或「错误」两个字开头，再跟一句理由。"""),
+        HumanMessage(f"问题：{question}\n回答：{answer}")
+    ]
+    review = model.invoke(message)
+    if not review.content.strip().startswith("正确"):
+        retry_count += 1
+    print(review.content)
+    return {"messages" : [review]}
 # ── ④ 节点：每个节点 = 一个函数，收 state、还 state ──
 def call_model(state):
     messages = [SystemMessage("""你是问答助手，首先根据笔记里的内容回答，
@@ -91,15 +113,24 @@ builder = StateGraph(MessagesState)
 builder.add_node("model", call_model)
 builder.add_node("tools", ToolNode(tools))   # ToolNode = 框架现成的"工具站"
 builder.add_edge(START, "model")             # 起点 → 模型站（这条我帮你写好了）
+builder.add_node("critic", critic)
 
 def should_continue(state):
     last = state["messages"][- 1]
     if last.tool_calls:
         return "tools"
-    return END
+    return "critic"
+def after_critic(state):
+      global retry_count
+      last = state["messages"][- 1].content    # 最后一条 = 评审刚说的话
+      if last.strip().startswith("正确") or retry_count >= MAX_try: # 评审说「正确」→ 交卷
+        retry_count = 0
+        return END
+      return "model"                            # 评审说「错误」→ 回去重写
 
-builder.add_conditional_edges("model", should_continue, {"tools": "tools", END: END})
+builder.add_conditional_edges("model", should_continue, {"tools": "tools", "critic": "critic"})
 builder.add_edge("tools", "model")
+builder.add_conditional_edges("critic", after_critic, {"model" : "model", END : END})
 conn = sqlite3.connect("checkpoints.sqlite", check_same_thread=False)
 checkpointer = SqliteSaver(conn)
 app = builder.compile(checkpointer=checkpointer)
@@ -111,5 +142,11 @@ while True:
     ques = input("你的问题：")
     if ques.strip() in ("quit", "exit", "q", "退出"):
         break
+    #result = app.invoke({"messages": [("user", ques)]}, config=config)
+    #print("模型回答：", result["messages"][-2].content) # 一句话打完，补个换行
     result = app.invoke({"messages": [("user", ques)]}, config=config)
-    print("模型回答：", result["messages"][-1].content) # 一句话打完，补个换行
+    last_review = result["messages"][-1].content
+    if last_review.strip().startswith("错误"):
+        print("模型回答： 太难了我不会")
+    else:
+        print("模型回答：", result["messages"][-2].content)
