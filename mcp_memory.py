@@ -23,22 +23,23 @@ server = MCPServer("memory")
 
 
 @server.tool()
-def remember(text: str) -> str:
+def remember(text: str, user_id: str) -> str:
     """存储对话记忆"""
     vec = embed(text)
-    col_memory.add(ids = [str(time.time())], documents= [text], embeddings= [vec])
-    return f"存入成功: {text}"
+    col_memory.add(ids = [str(time.time())], documents= [text],
+                    embeddings= [vec], metadatas= [{"user_id": user_id}])
+    return f"用户 {user_id} 存入成功：{text}"
 @server.tool()
-def recall(question: str) -> str:
+def recall(question: str, user_id: str) -> str:
     """获取对话记忆"""
     q_vec = embed(question)
-    results = col_memory.query(query_embeddings= [q_vec], n_results= 2)
+    results = col_memory.query(query_embeddings= [q_vec], n_results= 2, where = {"user_id": user_id})
     # ② 空库 → 也没有相关记忆
     if not results["documents"][0]:
         return "没有相关记忆"
     if results["distances"][0][0] > 0.9:
         return "没有相关记忆"
-    return "\n\n".join(results["documents"][0])
+    return results["documents"][0][0]
 
 # ── ⑤ 开门 ──
 if __name__ == "__main__":
