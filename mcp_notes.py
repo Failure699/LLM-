@@ -17,7 +17,7 @@ def embed(text):
 
 chroma = chromadb.PersistentClient(path="./chroma_db")
 col = chroma.get_or_create_collection("my_notes", metadata={"hnsw:space": "cosine"})
-
+DISTANCE_THRESHOLD = 0.5
 # ── ③ 开店 ──
 server = MCPServer("notes")
 
@@ -25,15 +25,28 @@ server = MCPServer("notes")
 @server.tool()
 def search_notes(question: str) -> str:
     """在用户的私人笔记里检索相关段落。用户问题涉及笔记内容时先调用它查资料。"""
-    # 1) q_vec = embed(question)
-    # 2) results = col.query(query_embeddings=[q_vec], n_results=3)
-    # 3) 第一名距离 distances[0][0] > 0.9 → return "资料中没有相关内容"
-    # 4) 否则 return "\n\n".join(results["documents"][0])
+    # 1) 将问题转成向量，并检索最相关的 3 个分块。
+    # 2) 逐块使用距离门槛过滤，保留正文与来源的一一对应关系。
+    # 3) 没有合格分块时明确拒答；否则返回正文和去重后的来源清单。
     q_vec = embed(question)
     results = col.query(query_embeddings=[q_vec], n_results=3)
-    if results["distances"][0][0] > 0.9:
+    hits = results["documents"][0]
+    metas = results["metadatas"][0]
+    distances = results["distances"][0]
+    relevant_hits = []
+    relevant_sources = set()
+    for hit, meta, distance in zip(hits, metas, distances):
+        if distance <= DISTANCE_THRESHOLD:
+            source_name = os.path.basename(meta["source"])
+            evidence = f"来源为： {source_name}\n {hit}"
+            relevant_hits.append(evidence)
+            relevant_sources.add(source_name)
+    if not relevant_hits:
         return "资料中没有相关内容"
-    return "\n\n".join(results["documents"][0])
+    context = "\n\n".join(relevant_hits)
+    source_text = "\n".join(f"- {source_name}"
+            for source_name in sorted(relevant_sources))
+    return f"资料内容：\n{context}\n\n检索来源：\n{source_text}"
 
 # ── ⑤ 开门 ──
 if __name__ == "__main__":
