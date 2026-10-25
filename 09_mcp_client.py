@@ -6,6 +6,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from contextlib import AsyncExitStack
 load_dotenv()
 with open(".mcp.json", "r", encoding = "utf-8") as file:
     mcp_config = json.load(file)
@@ -57,117 +58,127 @@ async def execute_tool(tool_sessions, tool_call, user_id):
             return "工具没有返回文字结果"
     return tool_text
 async def main():
-    async with stdio_client(weather_server_params) as (weather_read, weather_write):
-        async with ClientSession(weather_read, weather_write) as weather_session:
-            async with stdio_client(memory_server_params) as (memory_read, memory_write):
-                async with ClientSession(memory_read, memory_write) as memory_session:
-                    await weather_session.initialize()
-                    await memory_session.initialize()
-                    tool_session = {}
-                    weather_tools_result = await weather_session.list_tools()
-                    memory_tools_result = await memory_session.list_tools()
-                    for tool in weather_tools_result.tools:
-                        tool_session[tool.name] = weather_session
-                    for tool in memory_tools_result.tools:
-                        tool_session[tool.name] = memory_session
-                    tools = (weather_tools_result.tools + memory_tools_result.tools)
-                    deepseek_tools = []
-                    for tool in tools:
-                        parameters = copy.deepcopy(tool.input_schema)
-                        if tool.name in ("remember", "recall"):
-                            parameters.get("properties", {}).pop("user_id", None)
-                        if "required" in parameters:
-                            parameters["required"] = [
-                                name
-                                for name in parameters["required"]
-                                if name != "user_id"
-                            ]
-                        deepseek_tools.append({
-                            "type": "function",
-                            "function": {
-                                "name": tool.name,
-                                "description": tool.description,
-                                "parameters": parameters
-                            }   
-                        })
-                    for tool in deepseek_tools:
-                        print("已接入工具：", tool["function"]["name"])
-                    messages = [
-                                    {
-                                            "role": "system",
-                                            "content": """
-                                        你是一个带工具的个人助手。
-        
-                                        规则：
-                                        1. 用户透露关于自己的重要且长期有效的信息时，调用 remember 保存。
-                                        2. 回答涉及用户个人信息的问题时，先调用 recall 查询，不能凭空猜测。
-                                        3. 查询实时天气时，调用 get_weather。
-                                        4. 工具返回结果后，根据结果回答用户。
-                                        """
-                                    }
-                                ]
-                    while True:
-                        ques = input("请输入问题： ")
-                        if ques.strip() in ("quit", "exit", "q", "退出"):
-                            break
-                        if not ques.strip():
-                            print("请输入具体问题")
-                            continue
-                        turn_start = len(messages)
-                        messages.append({"role": "user", "content": ques})
-                        step_count = 0
-                        while step_count < MAX:
-                            step_count += 1
-                            print(f"\n===== Agent 第 {step_count} 轮 =====")
-                            try:
-                                if step_count == MAX:
-                                    # 第5次：不提供工具，只能整理最终答案
-                                    response = client.chat.completions.create(
-                                        model="deepseek-chat",
-                                        messages=messages
-                                    )
-                                    messages.append(response.choices[0].message)
-                                    print("达到最大工具轮数，开始强制生成最终回答")
-                                    print("最终回答是:" ,response.choices[0].message.content)
-                                    break
-                                response = client.chat.completions.create(
-                                        model="deepseek-chat",
-                                        messages=messages,
-                                        tools=deepseek_tools
-                                )
-                            except Exception as error:
-                                print("DeepSeek请求失败：", error)
-                                del messages[turn_start:] # 不知道什么意思
-                                break
-                            assistant_message = response.choices[0].message
-                            print("模型文字：", assistant_message.content)
-                            print("模型要调用的工具：", assistant_message.tool_calls)
-                            if assistant_message.tool_calls:
-                                messages.append(assistant_message)
-                                tool_tasks = []
+     async with AsyncExitStack() as stack:
+        sessions = {}
+        for server_name, server_config in server_configs.items():
+            server_params = StdioServerParameters(
+                command = server_config["command"],
+                args = server_config.get("args", []),
+                env = server_config.get("env") or None
+            )
+            read_stream, write_stream = await stack.enter_async_context(
+                    stdio_client(server_params)
+            )
+            session = await stack.enter_async_context(
+                    ClientSession(read_stream, write_stream)
+            )
+            await session.initialize()
+            sessions[server_name] = session
+            print("已连接Server： ", server_name)
+        tool_sessions = {}
+        deepseek_tools = []
+        for server_name, session in sessions.items():
+            tool_result = await session.list_tools()
+            for tool in tool_result.tools:
+                if tool.name in tool_sessions:
+                    raise ValueError(f"发现重命名工具: {tool.name}")
+                tool_sessions[tool.name] = session
+                parameters = copy.deepcopy(tool.input_schema)
+                if (tool.name in ("remember", "recall")):
+                    parameters.get("properties", {}).pop("user_id", None)
+                    if "required" in parameters:
+                        parameters["required"] = [
+                            name
+                            for name in parameters["required"]
+                            if name != "user_id"
+                        ]
+                deepseek_tools.append({
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": parameters
+                        }
+                    })
+                print(
+                    f"已接入工具:  {server_name}.{tool.name}"
+                    )
+        messages = [
+                    {
+                        "role": "system",
+                            "content":
+                        """你是一个带工具的个人助手。
+                        规则：
+                        1. 用户透露关于自己的重要且长期有效的信息时，调用 remember 保存。
+                        2. 回答涉及用户个人信息的问题时，先调用 recall 查询，不能凭空猜测。
+                        3. 查询实时天气时，调用 get_weather。
+                        4. 工具返回结果后，根据结果回答用户。    """
+                    }
+                ]
+        while True:
+            ques = input("请输入你的问题： ")
+            if ques.strip() in ("quit", "exit", "q", "退出"):
+                break
+            if not ques.strip():
+                print("请输入具体问题")
+                continue
+            turn_start = len(messages)
+            messages.append({"role": "user", "content": ques})
+            step_count = 0
+            while step_count < MAX:
+                step_count += 1
+                print(f"\n===== Agent 第 {step_count} 轮 =====")
+                try:
+                    if step_count == MAX:
+                        # 第5次：不提供工具，只能整理最终答案
+                        response = client.chat.completions.create(
+                            model="deepseek-chat",
+                            messages=messages
+                        )
+                        messages.append(response.choices[0].message)
+                        print("达到最大工具轮数，开始强制生成最终回答")
+                        print("最终回答是:" ,response.choices[0].message.content)
+                        break
+                    response = client.chat.completions.create(
+                            model="deepseek-chat",
+                            messages=messages,
+                            tools=deepseek_tools
+                    )
+                except Exception as error:
+                    print("DeepSeek请求失败：", error)
+                    # 请求失败时回滚本轮消息，避免残缺对话污染后续上下文。
+                    del messages[turn_start:]
+                    break
+                assistant_message = response.choices[0].message
+                print("模型文字：", assistant_message.content)
+                print("模型要调用的工具：", assistant_message.tool_calls)
+                if assistant_message.tool_calls:
+                    messages.append(assistant_message)
+                    tool_tasks = []
 
-                                for tool_call in assistant_message.tool_calls:
-                                    task = execute_tool(tool_session, tool_call, USER_ID)
-                                    tool_tasks.append(task)
-                                tool_texts = await asyncio.gather(*tool_tasks, return_exceptions= True )
-                                for tool_call, tool_text in zip(
-                                    assistant_message.tool_calls,
-                                    tool_texts
-                                ):
-                                    if isinstance(tool_text, Exception):
-                                        tool_text = f"工具调用失败：{tool_text}"
-                                    
-                                    print("工具调用：", tool_call.function.name)
-                                    print("整理后的工具结果：", tool_text)
-                                    messages.append({
-                                        "role": "tool",
-                                        "tool_call_id": tool_call.id,
-                                        "content": tool_text
-                                    })
-                            else:
-                                print("最终回答：", assistant_message.content)
-                                messages.append(assistant_message)
-                                break
+                    for tool_call in assistant_message.tool_calls:
+                        task = execute_tool(tool_sessions, tool_call, USER_ID)
+                        tool_tasks.append(task)
+                    tool_texts = await asyncio.gather(*tool_tasks, return_exceptions= True )
+                    for tool_call, tool_text in zip(
+                        assistant_message.tool_calls,
+                        tool_texts
+                    ):
+                        if isinstance(tool_text, Exception):
+                            tool_text = f"工具调用失败：{tool_text}"
+
+                        print("工具调用：", tool_call.function.name)
+                        #print("整理后的工具结果：", tool_text)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": tool_text
+                        })
+                else:
+                    print("最终回答：", assistant_message.content)
+                    messages.append(assistant_message)
+                    break
+
             
 if __name__ == "__main__":
     asyncio.run(main())
