@@ -19,6 +19,31 @@
 | **合计** | **0/10** | **10/10** |
 
 判据：天气题看「是否调用天气工具」（能否拿到实时数据）；笔记题看「私有表述是否命中」。
+### 工具路由与参数评测
+
+使用 `eval_tool_routing.py` 对 Agent 的第一轮工具选择进行独立评测，不实际执行工具，从而排除网络和外部 API 的干扰。
+
+| 指标 | 测试规模 | 结果 |
+|------|----------|------|
+| 工具种类精确匹配 | 15 个问题 × 3 轮 | 45/45（100%） |
+| 天气工具调用次数与城市参数 | 4 个问题 × 3 轮 | 12/12（100%） |
+
+路由测试覆盖：
+
+- `search_notes`、`get_weather`、`remember`、`recall`
+- 无工具问题
+- 多工具并行调用
+- “天气 API 笔记”与“实时天气”的边界
+- 多城市参数及混合工具场景
+
+运行：
+```powershell
+python eval_tool_routing.py
+```
+这组指标和原来的 `裸模型 0/10 vs Agent 10/10` 含义不同：
+
+- 原评测：最终任务能否完成。
+- 新评测：第一轮工具选择、调用次数和参数是否正确。
 
 ## 技术栈
 - 大模型：DeepSeek（`deepseek-chat`）
@@ -35,11 +60,16 @@
    - `python 07_agent.py` —— 多工具 Agent（查笔记 + 查天气）
    - `python eval.py` —— 评测：裸模型 vs Agent（10 题对比）
    - `python chat.py` —— 最简多轮对话
+   - `python 09_mcp_client.py` —— 动态连接多个 MCP Server 的交互式 Agent
+   - `python eval_tool_routing.py` —— 工具路由与参数稳定性评测
 
 ## 目录结构
 - `01` ~ `06`：RAG 学习路径（余弦相似度 → embedding → 切块 → 检索 → chroma 持久化）
 - `07_agent.py`：多工具 function-calling agent
 - `08_langgraph_agent.py`：LangGraph 状态机 agent
+- `09_mcp_client.py`：动态加载 MCP Server，支持多工具并发、短期对话与用户记忆隔离
+- `mcp_memory.py`：基于 ChromaDB 的长期记忆 MCP 服务
+- `eval_tool_routing.py`：15题工具路由与4题天气参数评测，自动重复3轮
 - `eval.py`：评测脚本（裸模型 vs Agent，10 题对比）
 - `mcp_weather.py` / `mcp_notes.py`：把工具抽成 MCP 服务（对话窗口里 `/mcp` 连接）
 - `hello_llm.py`：第一个脚本，调一次大模型、打印回答

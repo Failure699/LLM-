@@ -112,7 +112,11 @@ async def main():
                         1. 用户透露关于自己的重要且长期有效的信息时，调用 remember 保存。
                         2. 回答涉及用户个人信息的问题时，先调用 recall 查询，不能凭空猜测。
                         3. 查询实时天气时，调用 get_weather。
-                        4. 工具返回结果后，根据结果回答用户。    """
+                        4. 工具返回结果后，根据结果回答用户。
+                        5. 用户询问技术概念、项目实现、学习进度，或明确要求查询私人笔记时，
+                        先调用 search_notes。若工具返回“资料中没有相关内容”，必须明确说明
+                        笔记中没有记录；如需使用模型自身知识补充，要明确标注为通用知识，
+                        不能伪装成笔记内容。"""
                     }
                 ]
         while True:
@@ -150,7 +154,7 @@ async def main():
                     del messages[turn_start:]
                     break
                 assistant_message = response.choices[0].message
-                print("模型文字：", assistant_message.content)
+                #print("模型文字：", assistant_message.content)
                 print("模型要调用的工具：", assistant_message.tool_calls)
                 if assistant_message.tool_calls:
                     messages.append(assistant_message)
