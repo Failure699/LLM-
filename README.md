@@ -1,76 +1,162 @@
-# 个人知识库 Agent
+# 个人知识库 MCP Agent
 
-一个能「查笔记、查天气」的 AI Agent：给大模型接上自己的知识库和工具，让它自主判断该用哪个工具来回答用户的问题。
+一个面向个人学习场景的多工具 Agent。它能够判断用户意图，按需查询私人笔记、实时天气和长期记忆，再基于真实工具结果生成回答；同时使用 critic 节点检查答案，失败时自动删除草稿并重试。
 
-## 能做什么
-- 查笔记：用 RAG（检索增强生成）从私人笔记里检索相关内容，再据此回答
-- 查天气：调用真实天气 API（和风天气，城市名 → 城市 ID → 实时天气）
+这个项目主要解决三个问题：
 
-## 评测结果（为什么它比裸模型强）
+- 大模型不知道私人资料：用 RAG 检索本地学习笔记。
+- 大模型拿不到实时信息：通过 MCP 接入天气 API。
+- 普通聊天重启后会失忆：组合 SQLite 短期记忆与 ChromaDB 长期记忆。
 
-给大模型接上工具后，它能答对「实时 / 私人」问题，而**裸模型（不给工具）一道都答不上来**。
+## 核心能力
 
-用 10 道题同时考「裸模型」和「本 Agent」（`python eval.py`）：
+- **动态工具发现**：从 `.mcp.json` 启动多个 MCP Server，自动获取工具说明与参数结构。
+- **多工具并发**：一个问题需要多个工具时，通过 `asyncio.gather()` 并发执行。
+- **私人笔记 RAG**：使用 `BAAI/bge-m3` 向量化笔记，ChromaDB 持久化存储并返回来源引用。
+- **双层记忆**：LangGraph checkpointer 保存线程内对话；`remember` / `recall` 保存跨会话长期记忆。
+- **用户隔离**：`user_id` 不交给模型生成，由客户端注入可信值，避免读取其他用户的记忆。
+- **回答反思**：critic 根据对话历史和工具证据判断回答是否正确、有用；失败草稿会被删除并重新生成。
+- **循环保护**：限制 critic 重试次数和 LangGraph 总执行步数，防止无限循环。
+
+## 系统架构
+
+```text
+用户问题
+   ↓
+LangGraph model 节点（DeepSeek）
+   ├─ 不需要工具 ─────────────────────┐
+   │                                  ↓
+   └─ 生成 tool_calls → MCP tools → model
+                         │             ↓
+                         ├─ search_notes（私人笔记 RAG）
+                         ├─ get_weather（实时天气）
+                         ├─ remember（写入长期记忆）
+                         └─ recall（检索长期记忆）
+                                       ↓
+                                critic 评审节点
+                                  ├─ 通过 → 最终回答
+                                  └─ 失败 → 删除草稿并重试
+```
+
+MCP Client 读取 `.mcp.json`，通过 stdio 启动并连接三个 Server：
+
+| MCP Server | 工具 | 作用 |
+|---|---|---|
+| `mcp_weather.py` | `get_weather` | 查询实时天气 |
+| `mcp_notes.py` | `search_notes` | 检索私人学习笔记并返回来源 |
+| `mcp_memory.py` | `remember`、`recall` | 保存和检索跨会话记忆 |
+
+## 评测结果
+
+### 最终任务效果
+
+使用 10 道实时信息与私人知识问题对比裸模型和 Agent（`python eval.py`）：
 
 | 类型 | 裸模型 | Agent |
-|------|--------|-------|
-| 实时天气（5 题） | 0/5（拒答，拿不到实时数据） | 5/5（调用天气工具） |
-| 私人知识（5 题） | 0/5（不知道你的笔记/个人情况） | 5/5（检索知识库） |
+|---|---:|---:|
+| 实时天气（5 题） | 0/5 | 5/5 |
+| 私人知识（5 题） | 0/5 | 5/5 |
 | **合计** | **0/10** | **10/10** |
 
-判据：天气题看「是否调用天气工具」（能否拿到实时数据）；笔记题看「私有表述是否命中」。
-### 工具路由与参数评测
+判据：天气题检查是否获得实时工具数据；笔记题检查是否命中私人知识库中的目标内容。
 
-使用 `eval_tool_routing.py` 对 Agent 的第一轮工具选择进行独立评测，不实际执行工具，从而排除网络和外部 API 的干扰。
+### 工具路由与参数
+
+`eval_tool_routing.py` 只评测第一轮工具选择，不实际执行外部工具，从而排除网络波动：
 
 | 指标 | 测试规模 | 结果 |
-|------|----------|------|
+|---|---:|---:|
 | 工具种类精确匹配 | 15 个问题 × 3 轮 | 45/45（100%） |
-| 天气工具调用次数与城市参数 | 4 个问题 × 3 轮 | 12/12（100%） |
+| 天气调用次数与城市参数 | 4 个问题 × 3 轮 | 12/12（100%） |
 
-路由测试覆盖：
+测试覆盖 `search_notes`、`get_weather`、`remember`、`recall`、无工具问题、多工具组合、多城市参数，以及“天气 API 笔记”和“实时天气”的意图区分。
 
-- `search_notes`、`get_weather`、`remember`、`recall`
-- 无工具问题
-- 多工具并行调用
-- “天气 API 笔记”与“实时天气”的边界
-- 多城市参数及混合工具场景
-
-运行：
-```powershell
-python eval_tool_routing.py
-```
-这组指标和原来的 `裸模型 0/10 vs Agent 10/10` 含义不同：
-
-- 原评测：最终任务能否完成。
-- 新评测：第一轮工具选择、调用次数和参数是否正确。
+> 以上结果来自当前自建小规模测试集，用于回归验证，不代表生产环境中的泛化准确率。
 
 ## 技术栈
-- 大模型：DeepSeek（`deepseek-chat`）
-- Embedding：硅基流动（`BAAI/bge-m3`）
-- 向量库：chromadb
-- Agent 框架：function calling / LangGraph
-- 天气 API：和风天气（QWeather）
-- 工具服务：MCP（stdio）
 
-## 操作流程
-1. 装依赖：`pip install openai chromadb python-dotenv langgraph mcp`
-2. 配密钥：复制 `.env.example` 为 `.env`，填入 `DEEPSEEK_API_KEY`、`SILICONFLOW_API_KEY`、`QWEATHER_API_KEY` 和 `QWEATHER_API_HOST`
-3. 启动：
-   - `python 07_agent.py` —— 多工具 Agent（查笔记 + 查天气）
-   - `python eval.py` —— 评测：裸模型 vs Agent（10 题对比）
-   - `python chat.py` —— 最简多轮对话
-   - `python 09_mcp_client.py` —— 动态连接多个 MCP Server 的交互式 Agent
-   - `python eval_tool_routing.py` —— 工具路由与参数稳定性评测
+- 生成模型：DeepSeek `deepseek-chat`
+- Embedding：硅基流动 `BAAI/bge-m3`
+- 向量数据库：ChromaDB PersistentClient
+- Agent 编排：LangGraph
+- 工具协议：MCP（stdio）
+- 短期记忆：LangGraph `AsyncSqliteSaver`
+- 天气数据：和风天气 API
 
-## 目录结构
-- `01` ~ `06`：RAG 学习路径（余弦相似度 → embedding → 切块 → 检索 → chroma 持久化）
-- `07_agent.py`：多工具 function-calling agent
-- `08_langgraph_agent.py`：LangGraph 状态机 agent
-- `09_mcp_client.py`：动态加载 MCP Server，支持多工具并发、短期对话与用户记忆隔离
-- `mcp_memory.py`：基于 ChromaDB 的长期记忆 MCP 服务
-- `eval_tool_routing.py`：15题工具路由与4题天气参数评测，自动重复3轮
-- `eval.py`：评测脚本（裸模型 vs Agent，10 题对比）
-- `mcp_weather.py` / `mcp_notes.py`：把工具抽成 MCP 服务（对话窗口里 `/mcp` 连接）
-- `hello_llm.py`：第一个脚本，调一次大模型、打印回答
-- `chat.py`：多轮对话版机器人（带上下文记忆）
+## 快速开始
+
+### 1. 创建环境并安装依赖
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install openai langchain-openai langgraph langgraph-checkpoint-sqlite chromadb mcp python-dotenv requests
+```
+
+### 2. 配置密钥
+
+复制 `.env.example` 为 `.env`，填写：
+
+```dotenv
+DEEPSEEK_API_KEY=你的密钥
+SILICONFLOW_API_KEY=你的密钥
+QWEATHER_API_KEY=你的密钥
+QWEATHER_API_HOST=你的API_HOST
+NOTES_DIR=notes
+```
+
+`.env`、ChromaDB 数据和 SQLite 对话记录均已加入 `.gitignore`，不会提交到仓库。
+
+### 3. 准备私人笔记索引
+
+将 Markdown 笔记放入 `NOTES_DIR` 指定的目录，然后运行：
+
+```powershell
+python 06_rag_persistent.py
+```
+
+首次运行或笔记发生变化时更新索引；日常查询可以直接复用已有 ChromaDB。
+
+### 4. 启动完整 Agent
+
+```powershell
+python 10_langgraph_mcp_agent.py
+```
+
+程序会根据 `.mcp.json` 自动启动 MCP Server。输入 `q`、`quit`、`exit` 或 `退出` 结束。
+
+运行前可在 `10_langgraph_mcp_agent.py` 中修改：
+
+- `USER_ID`：长期记忆所属用户。
+- `thread_id`：当前短期对话线程；相同值恢复历史，不同值创建隔离会话。
+
+### 5. 运行评测
+
+```powershell
+python eval.py
+python eval_tool_routing.py
+python 06_rag_threshold_eval.py
+```
+
+## 主要文件
+
+| 文件 | 作用 |
+|---|---|
+| `01`～`06` | 从余弦相似度、Embedding、分块到持久化 RAG 的学习路径 |
+| `06_rag_threshold_eval.py` | 用正负样本评估 RAG 距离阈值 |
+| `07_agent.py` | 原生 function calling 多工具 Agent |
+| `08_langgraph_agent.py` | LangGraph 状态、条件路由与 critic |
+| `09_mcp_client.py` | 原生异步 MCP Client、多 Server 和并发工具调用 |
+| `10_langgraph_mcp_agent.py` | 最终版：LangGraph + MCP + 双层记忆 + critic |
+| `mcp_weather.py` | 天气 MCP Server |
+| `mcp_notes.py` | 私人笔记 RAG MCP Server |
+| `mcp_memory.py` | 长期记忆 MCP Server |
+| `eval_tool_routing.py` | 工具种类、调用次数和参数评测 |
+| `eval.py` | 裸模型与 Agent 的最终任务对比 |
+
+## 当前边界
+
+- RAG 阈值来自当前笔记和小规模测试集，换语料后需要重新评估。
+- stdio MCP Server 适合本地单机演示，尚未实现远程部署、鉴权和服务监控。
+- 当前用户与线程标识由本地常量配置；生产系统应由登录态或服务端身份系统生成。
+- 天气结果依赖外部 API 的可用性和数据范围。
